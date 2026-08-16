@@ -43,7 +43,7 @@ const initiateVote = asyncHandler(async (req, res) => {
       reference,
       currency: 'USD',
       callback_url: process.env.PAYSTACK_CALLBACK_URL,
-      channels: ['apple_pay', 'card'],
+      channels: ['card', 'apple_pay'],
       metadata: {
         nominee_id: nominee.id,
         nominee_name: nominee.name,
