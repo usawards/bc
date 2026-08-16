@@ -2,7 +2,6 @@ const { pool } = require('../config/db');
 const { logAudit } = require('../utils/audit');
 const { asyncHandler } = require('../utils/asyncHandler');
 
-// Public: list nominees with search/filter/sort - all inputs are parameterized.
 const listNominees = asyncHandler(async (req, res) => {
   const { search = '', category = '', state = '', sort = 'votes', page = 1, limit = 24 } = req.query;
 
@@ -25,12 +24,11 @@ const listNominees = asyncHandler(async (req, res) => {
   const orderBy = sort === 'newest' ? 'n.created_at DESC' : 'n.votes_count DESC';
   const safeLimit = Math.min(Number(limit) || 24, 100);
   const offset = (Math.max(Number(page), 1) - 1) * safeLimit;
-
   params.push(safeLimit, offset);
 
   const query = `
     SELECT n.id, n.name, n.state, n.bio, n.photo_url, n.social_links, n.votes_count, n.created_at,
-           c.name AS category_name, c.slug AS category_slug
+           c.name AS category_name, c.slug AS category_slug, c.payment_mode AS category_payment_mode
     FROM nominees n
     JOIN categories c ON c.id = n.category_id
     WHERE ${conditions.join(' AND ')}
@@ -44,7 +42,7 @@ const listNominees = asyncHandler(async (req, res) => {
 
 const getNominee = asyncHandler(async (req, res) => {
   const result = await pool.query(
-    `SELECT n.*, c.name AS category_name, c.slug AS category_slug
+    `SELECT n.*, c.name AS category_name, c.slug AS category_slug, c.payment_mode AS category_payment_mode
      FROM nominees n JOIN categories c ON c.id = n.category_id
      WHERE n.id = $1 AND n.is_active = true`,
     [req.params.id]
@@ -53,7 +51,6 @@ const getNominee = asyncHandler(async (req, res) => {
   res.json({ nominee: result.rows[0] });
 });
 
-// Admin: create nominee
 const createNominee = asyncHandler(async (req, res) => {
   const { name, category_id, state, bio, photo_url, social_links } = req.body;
 
@@ -67,7 +64,6 @@ const createNominee = asyncHandler(async (req, res) => {
   res.status(201).json({ nominee: result.rows[0] });
 });
 
-// Admin: update nominee (partial)
 const updateNominee = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { name, category_id, state, bio, photo_url, social_links, is_active } = req.body;
@@ -92,7 +88,6 @@ const updateNominee = asyncHandler(async (req, res) => {
   res.json({ nominee: result.rows[0] });
 });
 
-// Admin: soft-delete (keeps historical vote/transaction integrity)
 const deleteNominee = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const result = await pool.query(

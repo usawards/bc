@@ -1,36 +1,53 @@
 # USEA Backend
 
-Express + PostgreSQL API for the United States Excellence Awards voting platform.
-Handles nominees, categories, vote purchases via Paystack, live leaderboard,
-admin auth, and audit logging. Designed to deploy as its own Render **Web
-Service**, separate from the Next.js frontend repo.
+Express + PostgreSQL API for the United States Excellence Awards voting
+platform, using **Supabase's pooled Postgres connection** (`DATABASE_URL` +
+`pg`, not the Supabase JS client). Handles nominees, categories, vote
+purchases via Paystack (card / Apple Pay / M-Pesa STK push depending on
+category), live leaderboard, admin auth, and audit logging. Deploys as its
+own Render **Web Service**, separate from the frontend repo.
 
-## ⚠️ Read this before you deploy: Paystack currency support
+## ⚠️ Two things to confirm with Paystack before relying on this
 
-Paystack's core markets are Nigeria, Ghana, South Africa, and Kenya. **USD
-transactions require a Paystack business account specifically enabled for USD
-settlement** (typically an international/ISO business profile) — a standard
-US-only setup may not have USD or Apple Pay available by default. Before
-building further on this:
+1. **USD + Apple Pay**: Paystack's core markets are Nigeria, Ghana, South
+   Africa, and Kenya. USD settlement + Apple Pay typically require a
+   specifically-enabled business account type. Check Settings → Preferences
+   / Payment Channels in your dashboard, or ask Paystack support directly.
+2. **M-Pesa (KES)**: the "Best African Youth Leader" category charges in
+   KES via M-Pesa STK push (Paystack's `/charge` endpoint with a
+   `mobile_money` payload). This is a **separate capability from USD** and
+   typically requires a Kenya-registered Paystack business settling in KES.
+   If that's not enabled on your account, transactions for that one
+   category will fail even though everything else works — confirm this
+   before launch, not after.
 
-1. Log into your Paystack dashboard → Settings → Preferences, and confirm USD
-   is an active currency on your account.
-2. Confirm Apple Pay is enabled for your account (Settings → Payment
-   Channels) — it requires domain verification (Settings → Apple Pay →
-   register your frontend domain) before it will actually render at checkout.
-3. If USD isn't available on your account, you'll need to either apply for
-   it with Paystack support, or reconsider the processor (e.g. Stripe has
-   native, first-class USD + Apple Pay support for US businesses). The code
-   here is written against Paystack per your request, but this is worth
-   confirming with Paystack directly first so you're not blocked after the
-   integration is built.
+Every other category uses the standard USD flow; only nominees in the
+M-Pesa category are affected by #2.
+
+## What changed recently (for your own reference)
+
+- **Voter email is auto-generated, not collected.** Paystack requires *an*
+  email on every charge, but the voter never types one — see
+  `generateSyntheticEmail()` in `votes.controller.js`. It uses the
+  `.invalid` TLD (reserved by RFC 2606) so it can never resolve to a real
+  inbox. Trade-off: there's no real receipt email and no way to contact a
+  voter afterward — the UI shouldn't promise either.
+- **`preferred_channel`** on `POST /api/votes/initiate` lets the frontend
+  put "Pay with Apple Pay" as the primary button and "Pay with card" as a
+  secondary one. Both still redirect to Paystack's own hosted checkout —
+  this only narrows which channel(s) that page opens with, it doesn't
+  change where the actual payment happens.
+- **Category-level `payment_mode`** (`standard` or `mpesa`) drives which
+  flow `initiateVote` uses. Only set `mpesa` on the one category meant to
+  charge in KES via M-Pesa — everything else should stay `standard`.
 
 ## Stack
 
 - Node.js + Express
-- PostgreSQL (raw SQL via `pg`, no ORM)
+- PostgreSQL via `pg` (Supabase's pooled connection string under the hood)
 - JWT admin authentication (`jsonwebtoken` + `bcryptjs`)
-- Paystack REST API (`axios`) for checkout + webhook verification
+- Paystack REST API (`axios`) — `/transaction/initialize` for the standard
+  flow, `/charge` for M-Pesa STK push, shared webhook handling for both
 - `helmet`, `cors`, `express-rate-limit`, `express-validator` for the security items in the spec
 
 ## Project structure
@@ -38,8 +55,8 @@ building further on this:
 ```
 server.js                  # app entry, middleware wiring, route mounting
 src/
-  config/db.js              # pg Pool
-  config/paystack.js        # axios client for Paystack REST API
+  config/db.js               # pg Pool (Supabase pooled connection string)
+  config/paystack.js          # axios client for Paystack REST API
   middleware/
     auth.js                 # requireAuth (JWT) + requireRole
     rateLimiter.js           # general + sensitive-route limits
@@ -51,103 +68,92 @@ src/
     asyncHandler.js
     audit.js                 # writes to audit_logs
 db/
-  migrations/001_init.sql    # schema
-  seed.sql                   # optional demo data
+  migrations/001_init.sql    # schema, incl. categories.payment_mode and transactions.currency/voter_phone
+  seed.sql                   # sample data, incl. the M-Pesa category
 scripts/
-  migrate.js                 # runs migrations
+  migrate.js                 # runs migrations against DATABASE_URL
   seed.js                    # runs seed.sql
   createAdmin.js              # CLI to create/update an admin user
-render.yaml                  # Render Blueprint (web service + Postgres)
+render.yaml                  # Render Blueprint (web service; DB is external/Supabase)
 ```
 
 ## Local setup
 
 ```bash
 npm install
-cp .env.example .env         # fill in DATABASE_URL, JWT_SECRET, Paystack keys
+cp .env.example .env         # fill in DATABASE_URL (Supabase pooled string), JWT_SECRET, Paystack keys
 npm run migrate
-npm run seed                 # optional - sample categories/nominees
+npm run seed                 # optional - sample categories/nominees, incl. the M-Pesa one
 node scripts/createAdmin.js you@example.com "SomeStrongPassword123" superadmin
 npm run dev
 ```
 
-Server runs on `http://localhost:10000` (or whatever `PORT` you set).
-
 ## Deploying: GitHub repo → Render Web Service
 
-1. **Push this folder to its own GitHub repo** (e.g. `usea-backend`). This
-   repo should contain *only* the backend — keep the frontend in its own
-   repo, since you're deploying them separately.
-2. **Create a Postgres instance on Render**: Dashboard → New → PostgreSQL.
-   Copy the "Internal Database URL" once it's provisioned.
-3. **Create the Web Service**: Dashboard → New → Web Service → connect the
-   GitHub repo.
-   - Runtime: Node
+1. Push this folder to its own GitHub repo (e.g. `usea-backend`).
+2. Render Dashboard → New → Web Service → connect the repo.
    - Build command: `npm install`
    - Start command: `npm start`
-   - Or skip steps 2–3 entirely and use `render.yaml` via Dashboard → New →
-     Blueprint, which provisions both together.
-4. **Set environment variables** on the Web Service (Render dashboard →
-   Environment): everything in `.env.example`, using the Postgres Internal
-   Database URL for `DATABASE_URL`, your real Paystack keys, and
-   `CORS_ORIGINS` set to your deployed frontend's URL (comma-separated if
-   there's more than one, e.g. a Vercel preview + production domain).
-5. **Run the migration once the service is live.** Render's dashboard gives
-   you a Shell tab on the web service — run `npm run migrate`, then
+   - Or use the included `render.yaml` via Dashboard → New → Blueprint.
+3. Set environment variables (Render → Environment): everything in
+   `.env.example` — `DATABASE_URL` from Supabase's Connection Pooling tab,
+   your real Paystack keys, `CORS_ORIGINS` set to your deployed frontend's URL.
+4. Run the migration once the service is live — Render's Shell tab on the
+   service: `npm run migrate`, then
    `node scripts/createAdmin.js you@example.com "StrongPassword123" superadmin`.
-6. **Point Paystack's webhook at your Render URL**: Paystack dashboard →
-   Settings → API Keys & Webhooks → set the webhook URL to
+   (You can also run `npm run migrate` from your own machine against the
+   same `DATABASE_URL` before the service is even deployed, since Supabase
+   is reachable from anywhere.)
+5. Point Paystack's webhook at your Render URL: Paystack dashboard →
+   Settings → API Keys & Webhooks →
    `https://<your-render-service>.onrender.com/api/webhooks/paystack`.
-7. **Point your frontend's Paystack callback** at whatever page in the
-   frontend repo should show the "vote confirmed" screen, and set that URL
+6. Point your frontend's Paystack callback at its confirmation page (e.g.
+   `https://<your-frontend>.onrender.com/vote-confirm.html`) and set that
    as `PAYSTACK_CALLBACK_URL` here.
 
-Render's free/starter web services spin down when idle, which means the
-*first* request after idle can take several seconds (cold start) — fine for
-a demo, worth upgrading the plan before a real vote-count-driven traffic
-spike (e.g. results day).
+Render's free/starter web services spin down when idle — the first request
+after idle can take several seconds.
 
 ## API overview
 
 **Public**
 - `GET /api/categories`
-- `GET /api/nominees?search=&category=&state=&sort=votes|newest&page=&limit=`
+- `GET /api/nominees?search=&category=&state=&sort=votes|newest&page=&limit=` — each nominee includes `category_payment_mode` so the frontend knows which checkout UI to show
 - `GET /api/nominees/:id`
 - `GET /api/leaderboard?category=&limit=`
 - `GET /api/settings`
-- `POST /api/votes/initiate` → `{ nominee_id, quantity, email, name? }` returns a Paystack `authorization_url` to redirect the browser to (or use `access_code` with Paystack's inline/popup JS on the frontend for a no-redirect flow)
-- `GET /api/votes/verify/:reference` → polling fallback after Paystack redirects back
+- `POST /api/votes/initiate` → `{ nominee_id, quantity, name?, preferred_channel?, voter_phone? }`
+  - Standard (USD) nominees: returns `{ flow: 'redirect', authorization_url, access_code, reference }`
+  - M-Pesa (KES) nominees: **requires** `voter_phone`; returns `{ flow: 'stk_push', status, display_text, reference }` — no redirect, the voter confirms on their phone
+- `GET /api/votes/verify/:reference` → polling fallback for both flows
 - `POST /api/webhooks/paystack` → Paystack calls this; not for frontend use
 
 **Admin** (`Authorization: Bearer <token>` from `POST /api/auth/login`)
 - `POST /api/auth/login`, `GET /api/auth/me`
-- `POST/PUT/DELETE /api/categories`, `/api/nominees`
-- `GET /api/admin/stats`
-- `GET /api/admin/transactions?status=&page=&limit=`
-- `GET /api/admin/transactions/export.csv`
+- `POST/PUT/DELETE /api/categories` (accepts `payment_mode`), `/api/nominees`
+- `GET /api/admin/stats` → `revenue_by_currency` is now an array (USD and KES tracked separately — they're different currencies, never summed together)
+- `GET /api/admin/transactions?status=&page=&limit=` / `/export.csv` — includes `currency` and `voter_phone` columns
 - `GET /api/admin/audit-logs` (superadmin only)
 - `PUT /api/settings` → `{ key, value }`
 
 ## Security notes / what's covered vs. what to add
 
-Covered here: JWT auth, role-based permissions (`superadmin` / `editor`),
-`helmet` security headers, rate limiting (general + tighter on login/vote
-endpoints), input validation + sanitization via `express-validator`,
-parameterized SQL everywhere (no string-built queries, so no SQL injection
-surface), Paystack webhook HMAC signature verification, idempotent vote
-crediting (a Postgres row lock prevents double-counting if the webhook and
-the verify-fallback both fire), and an audit log of every admin write.
+Covered: JWT auth, role-based permissions, `helmet` headers, rate limiting,
+input validation/sanitization, parameterized SQL everywhere, Paystack
+webhook HMAC verification, idempotent vote crediting (row lock prevents
+double-counting between the webhook and the verify-poll), audit log of
+every admin write.
 
-Deliberately left out, worth adding before this handles real traffic:
-- **CSRF**: not implemented, because this API is stateless (Bearer token in
-  an `Authorization` header, not a cookie), which is the standard way to
-  sidestep CSRF for token-based APIs. If you switch the admin panel to
-  cookie-based sessions, add `csurf` at that point.
-- **Photo uploads**: nominee photos are stored as a `photo_url` string
-  (i.e. the admin panel would need to upload to something like Cloudinary
-  or S3 first, then save the resulting URL here). Wiring up direct file
-  upload (multer + object storage) is a reasonable next step but needs its
-  own storage credentials, so it's left out for now.
-- **HTTPS enforcement**: Render terminates TLS for you automatically, so
-  there's nothing to add here — just don't disable it in the Render
-  dashboard.
+Left out on purpose:
+- **CSRF** — stateless Bearer-token API, standard to skip; add `csurf` only
+  if the admin panel moves to cookie sessions.
+- **Real voter contact** — by design now (see above). If you later want
+  actual receipts, that means collecting a real email again and reversing
+  this decision, not adding email-sending on top of a fake address.
+- **Photo uploads** — nominees store a `photo_url` string; direct upload
+  needs its own object storage (S3/Cloudinary/Supabase Storage), not wired
+  up yet.
+- **M-Pesa OTP edge cases** — the `/charge` integration handles the normal
+  STK-push path; Paystack's Charge API can also return an `send_otp` status
+  in some cases requiring a follow-up `/charge/submit_otp` call, which
+  isn't handled here yet. Worth adding if you see it happen in practice.

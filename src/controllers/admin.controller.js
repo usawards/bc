@@ -4,14 +4,14 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const getStats = asyncHandler(async (req, res) => {
   const [votes, revenue, nominees, txStatus] = await Promise.all([
     pool.query(`SELECT COALESCE(SUM(votes_count),0) AS total_votes FROM nominees`),
-    pool.query(`SELECT COALESCE(SUM(amount_usd),0) AS total_revenue FROM transactions WHERE status = 'success'`),
+    pool.query(`SELECT currency, COALESCE(SUM(amount),0) AS total FROM transactions WHERE status = 'success' GROUP BY currency`),
     pool.query(`SELECT COUNT(*) AS total_nominees FROM nominees WHERE is_active = true`),
     pool.query(`SELECT status, COUNT(*) AS count FROM transactions GROUP BY status`),
   ]);
 
   res.json({
     total_votes: Number(votes.rows[0].total_votes),
-    total_revenue_usd: Number(revenue.rows[0].total_revenue),
+    revenue_by_currency: revenue.rows, // e.g. [{currency:'USD', total: '123.40'}, {currency:'KES', total: '5400.00'}]
     total_nominees: Number(nominees.rows[0].total_nominees),
     transactions_by_status: txStatus.rows,
   });
@@ -32,8 +32,8 @@ const listTransactions = asyncHandler(async (req, res) => {
   params.push(safeLimit, offset);
 
   const result = await pool.query(
-    `SELECT t.id, t.reference, t.quantity, t.amount_usd, t.status, t.channel,
-            t.voter_email, t.created_at, t.verified_at, n.name AS nominee_name
+    `SELECT t.id, t.reference, t.quantity, t.currency, t.amount, t.status, t.channel,
+            t.voter_email, t.voter_phone, t.created_at, t.verified_at, n.name AS nominee_name
      FROM transactions t
      JOIN nominees n ON n.id = t.nominee_id
      ${where}
@@ -47,17 +47,17 @@ const listTransactions = asyncHandler(async (req, res) => {
 
 const exportTransactionsCsv = asyncHandler(async (req, res) => {
   const result = await pool.query(
-    `SELECT t.reference, n.name AS nominee_name, t.quantity, t.amount_usd, t.status,
-            t.channel, t.voter_email, t.created_at
+    `SELECT t.reference, n.name AS nominee_name, t.quantity, t.currency, t.amount, t.status,
+            t.channel, t.voter_email, t.voter_phone, t.created_at
      FROM transactions t JOIN nominees n ON n.id = t.nominee_id
      ORDER BY t.created_at DESC`
   );
 
-  const header = 'Reference,Nominee,Quantity,Amount (USD),Status,Channel,Voter Email,Created At\n';
+  const header = 'Reference,Nominee,Quantity,Currency,Amount,Status,Channel,Voter Email,Voter Phone,Created At\n';
   const escapeCsv = (val) => `"${String(val ?? '').replace(/"/g, '""')}"`;
   const rows = result.rows
     .map((r) =>
-      [r.reference, r.nominee_name, r.quantity, r.amount_usd, r.status, r.channel, r.voter_email, r.created_at]
+      [r.reference, r.nominee_name, r.quantity, r.currency, r.amount, r.status, r.channel, r.voter_email, r.voter_phone, r.created_at]
         .map(escapeCsv)
         .join(',')
     )

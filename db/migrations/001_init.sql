@@ -1,4 +1,3 @@
--- USEA core schema
 CREATE EXTENSION IF NOT EXISTS pgcrypto; -- for gen_random_uuid()
 
 CREATE TABLE IF NOT EXISTS admins (
@@ -14,6 +13,9 @@ CREATE TABLE IF NOT EXISTS categories (
   name TEXT NOT NULL,
   slug TEXT UNIQUE NOT NULL,
   description TEXT,
+  -- 'standard' = USD via card/Apple Pay. 'mpesa' = KES via M-Pesa STK push.
+  -- Only the "Best African Youth Leader" category should be 'mpesa'.
+  payment_mode TEXT NOT NULL DEFAULT 'standard' CHECK (payment_mode IN ('standard','mpesa')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -40,11 +42,16 @@ CREATE TABLE IF NOT EXISTS transactions (
   reference TEXT UNIQUE NOT NULL,
   nominee_id UUID NOT NULL REFERENCES nominees(id) ON DELETE RESTRICT,
   quantity INTEGER NOT NULL CHECK (quantity > 0),
-  amount_usd NUMERIC(10,2) NOT NULL,
-  amount_kobo BIGINT NOT NULL, -- smallest currency unit sent to Paystack
+  currency TEXT NOT NULL DEFAULT 'USD' CHECK (currency IN ('USD','KES')),
+  amount NUMERIC(12,2) NOT NULL,       -- amount in the transaction's currency, major unit
+  amount_subunit BIGINT NOT NULL,      -- amount sent to Paystack (cents / KES minor unit)
+  -- Voter email is SYSTEM-GENERATED (not entered by the voter) - see
+  -- votes.controller.js. Kept because Paystack requires an email to
+  -- process any charge, but it's synthetic, not a contact address.
   voter_email TEXT NOT NULL,
   voter_name TEXT,
-  channel TEXT, -- card, apple_pay, etc (from Paystack)
+  voter_phone TEXT, -- only populated for mpesa (M-Pesa STK push) transactions
+  channel TEXT,     -- card, apple_pay, mobile_money, etc (from Paystack)
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','success','failed')),
   paystack_data JSONB,
   ip_address TEXT,

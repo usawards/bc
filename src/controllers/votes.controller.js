@@ -4,16 +4,26 @@ const { paystack } = require('../config/paystack');
 const { asyncHandler } = require('../utils/asyncHandler');
 
 const VOTE_PRICE_USD = Number(process.env.VOTE_PRICE_USD || 0.9);
+const VOTE_PRICE_KES = Number(process.env.VOTE_PRICE_KES || 120); // placeholder - set your real KES price
 
-// Step 1: user picks a nominee + quantity on the frontend and calls this.
-// We create a "pending" transaction row, then ask Paystack to open a
-// checkout (which offers Apple Pay + card automatically based on your
-// Paystack dashboard channel settings and the visitor's device/browser).
+// Voters never type an email - Paystack requires one to process any charge,
+// so we generate a throwaway, clearly-fake one per transaction. ".invalid"
+// is a TLD reserved by RFC 2606 specifically so addresses like this can
+// never resolve to a real inbox or misroute to someone else's.
+function generateSyntheticEmail() {
+  return `voter-${crypto.randomBytes(6).toString('hex')}@usea-voter.invalid`;
+}
+
+// Step 1: create a pending transaction, then either start a standard
+// card/Apple Pay checkout (USD) or trigger an M-Pesa STK push (KES) -
+// which flow runs depends on the nominee's category.payment_mode.
 const initiateVote = asyncHandler(async (req, res) => {
-  const { nominee_id, quantity, email, name } = req.body;
+  const { nominee_id, quantity, name, preferred_channel, voter_phone } = req.body;
 
   const nomineeResult = await pool.query(
-    'SELECT id, name, is_active FROM nominees WHERE id = $1',
+    `SELECT n.id, n.name, n.is_active, c.payment_mode
+     FROM nominees n JOIN categories c ON c.id = n.category_id
+     WHERE n.id = $1`,
     [nominee_id]
   );
   const nominee = nomineeResult.rows[0];
@@ -26,24 +36,42 @@ const initiateVote = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Quantity must be a whole number between 1 and 5000.' });
   }
 
-  const amountUsd = Number((qty * VOTE_PRICE_USD).toFixed(2));
-  const amountKobo = Math.round(amountUsd * 100); // Paystack expects the smallest currency unit
+  const email = generateSyntheticEmail();
   const reference = `USEA-${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
 
+  if (nominee.payment_mode === 'mpesa') {
+    return initiateMpesaVote({ req, res, nominee, qty, email, name, voter_phone, reference });
+  }
+  return initiateStandardVote({ req, res, nominee, qty, email, name, preferred_channel, reference });
+});
+
+// ---- Standard flow: USD via card / Apple Pay, hosted Paystack checkout ----
+async function initiateStandardVote({ req, res, nominee, qty, email, name, preferred_channel, reference }) {
+  const amount = Number((qty * VOTE_PRICE_USD).toFixed(2));
+  const amountSubunit = Math.round(amount * 100);
+
   await pool.query(
-    `INSERT INTO transactions (reference, nominee_id, quantity, amount_usd, amount_kobo, voter_email, voter_name, ip_address)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [reference, nominee.id, qty, amountUsd, amountKobo, email, name || null, req.ip]
+    `INSERT INTO transactions (reference, nominee_id, quantity, currency, amount, amount_subunit, voter_email, voter_name, ip_address)
+     VALUES ($1, $2, $3, 'USD', $4, $5, $6, $7, $8)`,
+    [reference, nominee.id, qty, amount, amountSubunit, email, name || null, req.ip]
   );
+
+  // preferred_channel lets the frontend put "Pay with Apple Pay" as the
+  // primary button and "Pay with card" as a secondary one - both still
+  // redirect to Paystack's own secure hosted checkout either way; this
+  // only narrows which channel(s) that page opens with.
+  const channels = ['apple_pay', 'card'].includes(preferred_channel)
+    ? [preferred_channel]
+    : ['apple_pay', 'card'];
 
   try {
     const paystackResponse = await paystack.post('/transaction/initialize', {
       email,
-      amount: amountKobo,
+      amount: amountSubunit,
       reference,
       currency: 'USD',
       callback_url: process.env.PAYSTACK_CALLBACK_URL,
-      channels: ['card', 'apple_pay'],
+      channels,
       metadata: {
         nominee_id: nominee.id,
         nominee_name: nominee.name,
@@ -56,16 +84,59 @@ const initiateVote = asyncHandler(async (req, res) => {
     });
 
     const { authorization_url, access_code } = paystackResponse.data.data;
-    res.status(201).json({ reference, amount_usd: amountUsd, authorization_url, access_code });
+    res.status(201).json({ reference, amount_usd: amount, authorization_url, access_code, flow: 'redirect' });
   } catch (err) {
     await pool.query(`UPDATE transactions SET status = 'failed' WHERE reference = $1`, [reference]);
     const message = err.response?.data?.message || 'Could not start payment with Paystack.';
     res.status(502).json({ error: message });
   }
-});
+}
 
-// Fallback for the frontend to poll after Paystack redirects the browser
-// back, in case the webhook hasn't landed yet.
+// ---- M-Pesa flow: KES via Paystack's Charge API, triggers an STK push ----
+// direct to the voter's phone - no redirect, no hosted page. The frontend
+// polls /api/votes/verify/:reference the same way as the standard flow.
+async function initiateMpesaVote({ req, res, nominee, qty, email, name, voter_phone, reference }) {
+  const phone = String(voter_phone || '').replace(/\s+/g, '');
+  if (!/^(?:\+?254|0)7\d{8}$/.test(phone)) {
+    return res.status(400).json({ error: 'Enter a valid Kenyan M-Pesa number, e.g. 07XXXXXXXX or 2547XXXXXXXX.' });
+  }
+  const normalizedPhone = phone.replace(/^0/, '254').replace(/^\+/, '');
+
+  const amount = Number((qty * VOTE_PRICE_KES).toFixed(2));
+  const amountSubunit = Math.round(amount * 100);
+
+  await pool.query(
+    `INSERT INTO transactions (reference, nominee_id, quantity, currency, amount, amount_subunit, voter_email, voter_name, voter_phone, ip_address)
+     VALUES ($1, $2, $3, 'KES', $4, $5, $6, $7, $8, $9)`,
+    [reference, nominee.id, qty, amount, amountSubunit, email, name || null, normalizedPhone, req.ip]
+  );
+
+  try {
+    const chargeResponse = await paystack.post('/charge', {
+      email,
+      amount: amountSubunit,
+      currency: 'KES',
+      reference,
+      mobile_money: { phone: normalizedPhone, provider: 'mpesa' },
+    });
+
+    const data = chargeResponse.data.data;
+    res.status(201).json({
+      reference,
+      amount_kes: amount,
+      flow: 'stk_push',
+      status: data.status, // e.g. "pay_offline" while the STK prompt is pending on-device
+      display_text: data.display_text || 'Check your phone and enter your M-Pesa PIN to complete this vote.',
+    });
+  } catch (err) {
+    await pool.query(`UPDATE transactions SET status = 'failed' WHERE reference = $1`, [reference]);
+    const message = err.response?.data?.message || 'Could not start the M-Pesa payment with Paystack.';
+    res.status(502).json({ error: message });
+  }
+}
+
+// Fallback for the frontend to poll after either flow, until the payment
+// resolves (Paystack's own webhook is still the primary confirmation path).
 const verifyVote = asyncHandler(async (req, res) => {
   const { reference } = req.params;
 
@@ -99,12 +170,7 @@ async function applySuccessfulTransaction(tx, paystackData) {
   try {
     await client.query('BEGIN');
 
-    // Re-check status inside the transaction to prevent a double-credit race
-    // if the webhook and the verify endpoint land at the same moment.
-    const lockResult = await client.query(
-      `SELECT status FROM transactions WHERE id = $1 FOR UPDATE`,
-      [tx.id]
-    );
+    const lockResult = await client.query(`SELECT status FROM transactions WHERE id = $1 FOR UPDATE`, [tx.id]);
     if (lockResult.rows[0].status === 'success') {
       await client.query('ROLLBACK');
       return;

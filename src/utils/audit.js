@@ -7,7 +7,6 @@ async function logAudit({ adminId = null, action, details = {}, ip = null }) {
       [adminId, action, details, ip]
     );
   } catch (err) {
-    // Audit logging should never break the main request flow.
     console.error('Failed to write audit log:', err.message);
   }
 }

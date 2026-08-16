@@ -5,7 +5,7 @@ const { pool } = require('../src/config/db');
 
 async function migrate() {
   const dir = path.join(__dirname, '..', 'db', 'migrations');
-  const files = fs.readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
 
   const client = await pool.connect();
   try {
