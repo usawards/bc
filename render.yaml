@@ -1,5 +1,5 @@
-# Render Blueprint - web service only. Database is external (Supabase,
-# accessed via a pooled Postgres connection string).
+# Render Blueprint - lets you spin up the API + database from one file.
+# Dashboard > New > Blueprint > point at this repo.
 services:
   - type: web
     name: usea-backend
@@ -11,7 +11,9 @@ services:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
-        sync: false   # paste your Supabase pooled connection string here
+        fromDatabase:
+          name: usea-db
+          property: connectionString
       - key: DB_SSL
         value: true
       - key: JWT_SECRET
@@ -28,5 +30,7 @@ services:
         sync: false
       - key: VOTE_PRICE_USD
         value: 0.90
-      - key: VOTE_PRICE_KES
-        value: 120
+
+databases:
+  - name: usea-db
+    plan: starter

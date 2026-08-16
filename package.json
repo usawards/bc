@@ -1,7 +1,7 @@
 {
   "name": "usea-backend",
   "version": "1.0.0",
-  "description": "United States Excellence Awards - Voting API (Express + PostgreSQL/Supabase + Paystack)",
+  "description": "United States Excellence Awards - Voting API (Express + PostgreSQL + Paystack)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

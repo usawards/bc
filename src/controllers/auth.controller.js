@@ -12,6 +12,8 @@ const login = asyncHandler(async (req, res) => {
   ]);
   const admin = result.rows[0];
 
+  // Compare against a dummy hash even when the admin doesn't exist, so
+  // response timing doesn't reveal whether an email is registered.
   const hashToCheck = admin ? admin.password_hash : '$2a$12$invalidsaltinvalidsaltinvalidsaltinvalidsa';
   const passwordMatches = await bcrypt.compare(password || '', hashToCheck);
 
@@ -27,7 +29,10 @@ const login = asyncHandler(async (req, res) => {
 
   await logAudit({ adminId: admin.id, action: 'admin.login', ip: req.ip });
 
-  res.json({ token, admin: { id: admin.id, email: admin.email, role: admin.role } });
+  res.json({
+    token,
+    admin: { id: admin.id, email: admin.email, role: admin.role },
+  });
 });
 
 const me = asyncHandler(async (req, res) => {

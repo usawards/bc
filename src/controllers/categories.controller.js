@@ -11,12 +11,12 @@ const listCategories = asyncHandler(async (req, res) => {
 });
 
 const createCategory = asyncHandler(async (req, res) => {
-  const { name, description, payment_mode } = req.body;
+  const { name, description } = req.body;
   const slug = slugify(name);
 
   const result = await pool.query(
-    `INSERT INTO categories (name, slug, description, payment_mode) VALUES ($1, $2, $3, $4) RETURNING *`,
-    [name, slug, description || null, payment_mode || 'standard']
+    `INSERT INTO categories (name, slug, description) VALUES ($1, $2, $3) RETURNING *`,
+    [name, slug, description || null]
   );
 
   await logAudit({ adminId: req.admin.id, action: 'category.create', details: { id: result.rows[0].id }, ip: req.ip });
@@ -25,15 +25,12 @@ const createCategory = asyncHandler(async (req, res) => {
 
 const updateCategory = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { name, description, payment_mode } = req.body;
+  const { name, description } = req.body;
 
   const result = await pool.query(
-    `UPDATE categories SET
-       name = COALESCE($1, name),
-       description = COALESCE($2, description),
-       payment_mode = COALESCE($3, payment_mode)
-     WHERE id = $4 RETURNING *`,
-    [name || null, description ?? null, payment_mode || null, id]
+    `UPDATE categories SET name = COALESCE($1, name), description = COALESCE($2, description)
+     WHERE id = $3 RETURNING *`,
+    [name || null, description ?? null, id]
   );
 
   if (!result.rows[0]) return res.status(404).json({ error: 'Category not found.' });
