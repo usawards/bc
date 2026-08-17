@@ -105,4 +105,31 @@ const deleteNominee = asyncHandler(async (req, res) => {
   res.status(204).send();
 });
 
-module.exports = { listNominees, getNominee, createNominee, updateNominee, deleteNominee };
+// Admin: manually add votes (e.g. a payment succeeded off-platform, or the
+// automatic credit failed after a successful transaction). This is additive
+// only - it increments votes_count rather than overwriting it, and is
+// logged separately from a normal edit so it's traceable in the audit log.
+const addVotesManually = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { quantity, reason } = req.body;
+
+  const result = await pool.query(
+    `UPDATE nominees SET votes_count = votes_count + $1, updated_at = now()
+     WHERE id = $2 RETURNING *`,
+    [quantity, id]
+  );
+
+  if (!result.rows[0]) return res.status(404).json({ error: 'Nominee not found.' });
+
+  await logAudit({
+    adminId: req.admin.id,
+    action: 'nominee.votes.manual_add',
+    details: { id, quantity, reason: reason || null },
+    ip: req.ip,
+  });
+  res.json({ nominee: result.rows[0] });
+});
+
+module.exports = {
+  listNominees, getNominee, createNominee, updateNominee, deleteNominee, addVotesManually,
+};

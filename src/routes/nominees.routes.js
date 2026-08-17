@@ -1,7 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
 const {
-  listNominees, getNominee, createNominee, updateNominee, deleteNominee,
+  listNominees, getNominee, createNominee, updateNominee, deleteNominee, addVotesManually,
 } = require('../controllers/nominees.controller');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
@@ -40,5 +40,17 @@ router.put(
 );
 
 router.delete('/:id', requireAuth, requireRole('superadmin', 'editor'), deleteNominee);
+
+router.post(
+  '/:id/add-votes',
+  requireAuth,
+  requireRole('superadmin', 'editor'),
+  [
+    body('quantity').isInt({ min: 1, max: 5000 }),
+    body('reason').optional().isString().trim().isLength({ max: 300 }).escape(),
+  ],
+  validate,
+  addVotesManually
+);
 
 module.exports = router;
